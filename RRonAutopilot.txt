@@ -347,14 +347,4 @@ diag(B)=1
 fit<-my.optim.ridge(y=sex2$case,X=mm,penalize=c(0,rep(1,6)),B=B,numBoot=250,rangeOpt=c(0,20),standardize=TRUE,type.standardize=2,alpha=0.05)
  fit[names(fit)[-5]]
 
-#table for paper:
-tbl<-round(rbind(
-cbind(fit.f$coef[-1],fit.f$ci.l[-1],fit.f$ci.u[-1]),
-cbind(fit[names(fit)[2]]$coefs.opt.TM[-1,1],fit[names(fit)[4]]$CLIP[-1,2:3])
-),4)
-cv<-c("AGE","OC","VIC","VICL","VIS","DIA")
 
-xf<-cbind( rep("UTI",nrow(tbl)), rep(c("FP","RR"),each=6), rep(cv,2) ,tbl )
-
-xfx<-xtable(xf)
-print(xfx,include.rownames =F)

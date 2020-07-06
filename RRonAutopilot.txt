@@ -291,9 +291,10 @@ list(coefs.firth=fit.firt.out,coefs.opt.TM=opt.cfs.m, opt.lambda=opt.l.tot.med,C
 
 ########################################################################################
 
-####Example, model 1 from the paper
+####Example, using sex data
 
- 
+#########
+#univariate model 
 data(sex2)
 v<-sex2$dia
 mm <- model.matrix(~   factor(v)-1)
@@ -335,7 +336,8 @@ fit<-my.optim.ridge(y=sex2$case,X=mm,penalize=c(0,1),B=B,numBoot=25,rangeOpt=c(0
 fit<-my.optim.ridge(y=sex2$case,X=mm,penalize=c(0,1),B=B,numBoot=25,rangeOpt=c(0,20),standardize=TRUE,type.standardize=2,alpha=0.05)
  fit[names(fit)[-5]]
 
-#model with all vars
+#########
+#multivariate model
 
 mm <- model.matrix(~   factor(sex2$age)+factor(sex2$oc)+factor(sex2$vic)+factor(sex2$vicl)+factor(sex2$vis)+factor(sex2$dia) )
 fit.f<-logistf(sex2$case~mm -1)

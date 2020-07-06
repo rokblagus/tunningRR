@@ -138,7 +138,7 @@ betao
 ####main function
 
 #input parameters
-#y - outcome (0,1), a vector of length n, no missiing values are allowed
+#y - outcome (0,1), a vector of length n, no missing values are allowed
 #X - the design matrix, a matrix with n rows and p<n columns. If the intercept is included in the model, it has to be in the first column of X. All the other columns need to have at lest two distinct values! bernoulli variables need to be coded 0/1!
 #penalize - a vector (0,1) of length p. If 0 the coefficient is not penalized, if 1, ridge penalty is applied to this coefficient. If NULL (defalut) all coefficients but the first are penalized. Take care when the model does not include the intercept, since the default results in non-penalized estimate of the first covariate.
 #B - a spd matrix used to form the criterion from the second-order moment matrix (see paper). If NULL (default) it is set to indenty matrix resulting in optimizing the total MSE

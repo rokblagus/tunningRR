@@ -1,0 +1,360 @@
+
+#################################################################
+####dependencies
+
+library(logistf)
+
+
+#################################################################
+####aux functions
+
+#function to find the optimal criterion based on estimated 2nd-order moment matrix
+
+optim.lambda.function<-function(x,X,coef,penalize=NULL,B=NULL){
+n<-nrow(X)
+p<-ncol(X)
+if (is.null(penalize)) {penalize<-rep(1,p);penalize[1]<-0}
+if (is.null(B)) {B<-matrix(0,p,p);diag(B)<-1}
+
+pi<-1/(1+exp(-X%*%coef)) 
+W<-matrix(0,ncol=n,nrow=n)
+diag(W)<-pi-pi**2
+
+I<-matrix(0,ncol=p,nrow=p)
+diag(I)<-penalize
+
+XWX<-t(X)%*%W%*%X
+
+XWXI.inv<-solve(XWX+x*I)
+
+b<--x*I%*%XWXI.inv%*%matrix(coef,ncol=1)
+v<-XWXI.inv%*%XWX%*%XWXI.inv
+
+m<-v+b%*%t(b)
+
+sum(diag((B%*%m)))
+ 
+
+}
+
+
+
+#Georg' RR with Firth - version wi, corrected to not depend on eval and to add the possibility of penalizing only the selected coefs.
+
+
+logistr<-function(data, formula, priorv, penalize, s=10,intercept=TRUE,alpha=0.05){
+  penvars<-sum(penalize)
+  mf<-model.frame(data=data, formula=formula)
+  y<-model.response(mf)
+  x<-model.matrix(mf,data=data, formula=formula)
+  varnames<-colnames(x)
+  realdata<-cbind(x,y, weight=rep(1,nrow(x)))
+  
+  pseudodata<-matrix(0,2*(penvars),length(varnames)+2)
+  colnames(pseudodata)<-c(varnames,"y","weight")
+  pseudodata[,"y"]<-rep(c(0,1), (penvars))
+  j=1
+  for(i in which(penalize!=0)) {
+    j=j+1
+    pseudodata[(j-2)*2+(1:2),varnames[i]]<-1/s
+  }
+  
+  pseudodata[,"weight"]<- 2*s*s/priorv
+  pseudodata<-as.data.frame(pseudodata)
+  newdata<- rbind(realdata, pseudodata) 
+  if (intercept==TRUE) newdata$Intercept<-newdata[,"(Intercept)"]
+  if (intercept==TRUE) formula2<-as.formula(paste(paste(as.character(formula)[c(2,1,3)], collapse=""),"+Intercept-1", sep="")) else  formula2<-as.formula(paste(paste(as.character(formula)[c(2,1,3)], collapse=""), sep=""))
+  
+  fit.ridge<-logistf(data=newdata, formula=formula2, firth=FALSE, weights=weight, dataout=TRUE,alpha=alpha)
+  fit.ridge$call$formula<-formula2
+ return(fit.ridge)
+}
+ 
+#function used to standardize the data
+
+my.std<-function(X,type=1){
+n<-nrow(X)
+p<-ncol(X)
+if (sum(X[,1])==n) intercept=TRUE else intercept=FALSE
+
+ 
+if (type==1){
+ms<-apply(X,2,mean)
+ss<-apply(X,2,sd)
+
+X<-(X-matrix(ms,ncol=p,nrow=n,byrow=T))/matrix(ss,ncol=p,nrow=n,byrow=T)
+binom<-rep(0,p)
+
+} else {
+
+binom<-apply(X,2,function(x) ifelse(length(unique(x))==2,1,0) )
+
+xb<-as.matrix(X[,which(binom==1)],ncol=sum(binom),nrow=n,byrow=T)
+
+ms<-apply(X,2,mean)
+ss<-apply(X,2,sd)*2
+
+X<-(X-matrix(ms,ncol=p,nrow=n,byrow=T))/matrix(ss,ncol=p,nrow=n,byrow=T)
+
+
+
+#xbs<-apply(xb,2,function(x) {x1<-x; tb<-table(x)/n; x1[x==names(tb)[1]]<--tb[2]; x1[x==names(tb)[2]]<-tb[1]; x1} )
+xbs<-apply(xb,2,function(x) x-mean(x) )
+
+X[,which(binom==1)]<-xbs
+
+}
+
+if (intercept==TRUE) X[,1]<-1
+
+ list(X=X,means=ms,sds=ss,binom=binom)
+
+}
+
+#function used to get the coefs estimates back on the original scale 
+
+#beta - estimated coefs
+#z - - returned object of a call to my.std
+
+my.unstandardize<-function(beta,z){
+X<-z$X
+n<-nrow(X)
+p<-ncol(X)
+if (sum(X[,1])==n) intercept=TRUE else intercept=FALSE
+
+betao<-beta/z$sds
+adjb<-beta*z$means/z$sds
+adjb[which(z$binom==1)]<-(beta*z$means)[which(z$binom==1)]
+
+if (intercept==TRUE) betao[1]<-beta[1]-sum(adjb[-1])
+
+betao[which(z$binom==1)]<-beta[which(z$binom==1)]
+betao
+}
+
+
+#################################################################
+
+####main function
+
+#input parameters
+#y - outcome (0,1), a vector of length n, no missiing values are allowed
+#X - the design matrix, a matrix with n rows and p<n columns. If the intercept is included in the model, it has to be in the first column of X. All the other columns need to have at lest two distinct values! bernoulli variables need to be coded 0/1!
+#penalize - a vector (0,1) of length p. If 0 the coefficient is not penalized, if 1, ridge penalty is applied to this coefficient. If NULL (defalut) all coefficients but the first are penalized. Take care when the model does not include the intercept, since the default results in non-penalized estimate of the first covariate.
+#B - a spd matrix used to form the criterion from the second-order moment matrix (see paper). If NULL (default) it is set to indenty matrix resulting in optimizing the total MSE
+#numBoot - number of bootstrap samples to calculate the optimal penalty parameter and to form the models for CLIP. Default is set to 100.
+#rangeOpt - a vector of length 2 giving lower and upper bound of the interval over which the penalty parameter is optimized. Defaults to c(0,20). 
+#standardize - standardize all covariates to zero mean and unit variance (defaults to TRUE). The point and interval estimates are always given on the original scale. Note: when the model is fitted with the intercept and using standardize=TRUE, getting the correct CI bounds for the b0 on the original scale is not possible, hence NA is returned in this case. 
+#type.standardize - either 1 or 2. 1 - zero mean unit variance for all covariates, 2 - Gelman. Both make sense only when there are no interactions!
+#alpha - CI level (error part, not nominal level!)
+
+
+#output parameters
+#coefs.firth - coefficients obtained with Firth's method (included just for easier reference)
+#coefs.opt.TM - RR coeficients and CIs obtained with the proposed approach (coefs obtained at the optimal penalty parameter determined as the mean of the optima on different bootstrap datasets, the CI is the profile likelihood CI)
+#opt.lambda - the optimal penalty parameter (the mean of the optima on different bootstrap datasets)
+#CLIP - point estimate and CIs obtained by using CLIP. The estimate is the mode of the cobmined profile likelihood.  
+#clip.aux - output of CLIP.profile: a list of length=p. Can be used to get the plots as in Georg's original CLIP paper.
+
+
+
+my.optim.ridge<-function(y,X,penalize=NULL,B=NULL,numBoot=100,rangeOpt=c(0,20),standardize=TRUE,type.standardize=1,alpha=0.05){
+n<-nrow(X)
+p<-ncol(X)
+if (sum(y)==n|sum(y)==0) {stop("Outcome is constant. Not allowed")}
+if (sum(X[,1])==n) intercept=TRUE else intercept=FALSE
+sm<-sum(apply(X,2,function(x) ifelse(length(unique(x))==1,1,0)))
+if (intercept==TRUE&sm>1) {stop("One of the covariates is constant. Not allowed")}
+if (intercept==FALSE&sm>0) {stop("One of the covariates is constant. Not allowed")}
+if (is.null(penalize)) pen<-rep(1,p)
+if (is.null(penalize)&intercept==TRUE) pen[1]<-0
+if (is.null(penalize)) penalize<-pen
+
+if (is.null(B)){
+B<-matrix(0,p,p)
+diag(B)<-1
+} 
+
+if (standardize==TRUE){
+#if (intercept==FALSE){
+#means<-apply(X,2,mean)
+#sds<-apply(X,2,sd)
+#X<-(X-matrix(means,ncol=p,nrow=n,byrow=T))/matrix(sds,ncol=p,nrow=n,byrow=T)
+#} else {
+#means<-apply(X[,-1],2,mean)
+#sds<-apply(X[,-1],2,sd)
+#xs<-(X[,-1]-matrix(means,ncol=p-1,nrow=n,byrow=T))/matrix(sds,ncol=p-1,nrow=n,byrow=T)
+#X<-cbind(1,xs)
+#}
+xz<-my.std(X,type=type.standardize)
+X<-xz$X
+}
+
+
+if (intercept==TRUE) dd<-data.frame(y=y,X[,-1]) else dd<-data.frame(y=y,X)
+if (intercept==TRUE) formula<-as.formula(paste("y~",paste(names(dd)[-1],collapse="+"),sep="")) else formula<-as.formula(paste("y~",paste(names(dd)[-1],collapse="+"),"-1",sep="")) 
+
+fit.firt<-logistf(formula=formula,data=dd)$coef
+
+if (standardize==TRUE){
+fit.firt.out<-my.unstandardize(fit.firt,xz)} else {
+fit.firt.out<-fit.firt
+}
+
+
+opt.l.toti<-rep(NA,numBoot)
+fitl.ridge<-list()
+
+for (jj in 1:numBoot){
+flag=TRUE
+while(flag==TRUE){
+id<-sample(1:n,n,replace=T)
+xmi<-X[id,]
+smi<-sum(apply(xmi,2,function(x) ifelse(length(unique(x))==1,1,0)))
+flag=FALSE
+if (intercept==TRUE&smi>1) flag=TRUE 
+if (intercept==FALSE&smi>0) flag=TRUE 
+}
+
+firthi<- logistf(formula=formula,data=dd[id,])$coef 
+
+
+
+opt.l.toti[jj]<-optimize(optim.lambda.function,interval=rangeOpt,X=xmi,coef=firthi,penalize=penalize,B=B)$min
+fitl.ridge[[jj]]<-logistr(data=dd,formula=formula, priorv=1/opt.l.toti[jj],penalize=penalize, s=10,intercept=intercept) #here is the only change in comprsn with mycomp
+
+}
+
+opt.l.tot.med<-mean(opt.l.toti)
+
+fit.rr.my.opt.med<-logistr(data=dd, formula=formula, priorv=1/opt.l.tot.med, s=10,penalize=penalize,intercept=intercept,alpha=alpha)
+
+ 
+if (intercept==TRUE) opt.cfs<-fit.rr.my.opt.med$coef[c(p,1:(p-1))] else opt.cfs<-fit.rr.my.opt.med$coef
+if (intercept==TRUE) opt.cfs.l<-fit.rr.my.opt.med$ci.l[c(p,1:(p-1))] else opt.cfs.l<-fit.rr.my.opt.med$ci.l
+if (intercept==TRUE) opt.cfs.u<-fit.rr.my.opt.med$ci.u[c(p,1:(p-1))] else opt.cfs.u<-fit.rr.my.opt.med$ci.u
+ 
+if (standardize==TRUE) {opt.cfs<-my.unstandardize(opt.cfs,xz)}
+if (standardize==TRUE) {opt.cfs.l<-my.unstandardize(opt.cfs.l,xz)}
+if (standardize==TRUE) {opt.cfs.u<-my.unstandardize(opt.cfs.u,xz)}
+
+ 
+
+clipj<-cism<-cicf2<-list()
+gg=0
+for (jj in names(fitl.ridge[[1]]$coef)){
+gg=gg+1
+cpp<- CLIP.profile(obj = fitl.ridge, variable=jj,   firth = FALSE,    weightvar="weight",keep=TRUE) 
+ 
+cpp.low<-cpp$beta[cpp$cdf<=(alpha/2)][sum(cpp$cdf<=(alpha/2))]
+cpp.up<-cpp$beta[cpp$cdf>=(1-alpha/2)][1]
+
+cism[[gg]]<-c(cpp.low,cpp.up)
+cicf2[[gg]]<-cpp$beta[which.max(cpp$profile)]
+clipj[[gg]]<-cpp
+}
+names(clipj)<-names(fitl.ridge[[1]]$coef)
+
+cm.m<-matrix(unlist(cism),ncol=2,byrow=T)
+
+if (intercept==TRUE) cm.m<-cm.m[ c(p,1:(p-1)),]
+
+if (standardize==TRUE){
+ ci.l.rr.my.opt.clip<- my.unstandardize(cm.m[,1],xz)
+ ci.u.rr.my.opt.clip<- my.unstandardize(cm.m[,2],xz)
+} else {
+ci.l.rr.my.opt.clip<-cm.m[,1]
+ci.u.rr.my.opt.clip<-cm.m[,2]
+}
+
+cfs.opt2<-unlist(cicf2)
+if (intercept==TRUE) cfs.opt2<-cfs.opt2[c(p,1:(p-1))]
+
+##different optima based on CLIP
+if (standardize==TRUE){ 
+cfs.g.opt2<-my.unstandardize(cfs.opt2,xz) 
+} else {
+cfs.g.opt2<-cfs.opt2
+}
+
+clip<-cbind(cfs.g.opt2,ci.l.rr.my.opt.clip,ci.u.rr.my.opt.clip)
+colnames(clip)<-c("Estimate","CI low","CI up")
+rownames(clip)<-names(opt.cfs)
+if (intercept==TRUE&standardize==TRUE) clip["Intercept",2:3]<-NA
+opt.cfs.m<-cbind(opt.cfs,opt.cfs.l,opt.cfs.u)
+colnames(opt.cfs.m)<-c("Estimate","CI low","CI up")
+rownames(opt.cfs.m)<-names(opt.cfs)
+list(coefs.firth=fit.firt.out,coefs.opt.TM=opt.cfs.m, opt.lambda=opt.l.tot.med,CLIP=clip, clip.aux=clipj)
+
+}
+
+
+########################################################################################
+
+####Example, model 1 from the paper
+
+ 
+data(sex2)
+v<-sex2$dia
+mm <- model.matrix(~   factor(v)-1)
+
+ 
+fit.f<-logistf(sex2$case~mm-1)
+fit.f
+
+B<-matrix(0,2,2)
+diag(B)=1
+fit<-my.optim.ridge(y=sex2$case,X=mm,penalize=c(1,1),B=B,numBoot=250,rangeOpt=c(0,20),standardize=FALSE,type.standardize=NULL,alpha=0.05)
+ 
+
+fit[names(fit)[-5]]
+
+
+###plot CLIP
+par(mfrow=c(1,2))
+plot(fit$clip.aux[["factor.v.0"]])
+plot(fit$clip.aux[["factor.v.1"]])
+
+#the usual model with the intercept and a single bernouli predictor
+
+v<-sex2$dia
+mm <- model.matrix(~   factor(v) )
+
+ 
+fit.f<-logistf(sex2$case~mm -1)
+fit.f
+
+B<-matrix(0,2,2)
+diag(B)=1
+fit<-my.optim.ridge(y=sex2$case,X=mm,penalize=c(0,1),B=B,numBoot=25,rangeOpt=c(0,20),standardize=FALSE,type.standardize=NULL,alpha=0.05)
+ fit[names(fit)[-5]]
+
+fit<-my.optim.ridge(y=sex2$case,X=mm,penalize=c(0,1),B=B,numBoot=25,rangeOpt=c(0,20),standardize=TRUE,type.standardize=1,alpha=0.05)
+ fit[names(fit)[-5]]
+
+fit<-my.optim.ridge(y=sex2$case,X=mm,penalize=c(0,1),B=B,numBoot=25,rangeOpt=c(0,20),standardize=TRUE,type.standardize=2,alpha=0.05)
+ fit[names(fit)[-5]]
+
+#model with all vars
+
+mm <- model.matrix(~   factor(sex2$age)+factor(sex2$oc)+factor(sex2$vic)+factor(sex2$vicl)+factor(sex2$vis)+factor(sex2$dia) )
+fit.f<-logistf(sex2$case~mm -1)
+fit.f
+
+
+B<-matrix(0,7,7)
+diag(B)=1
+fit<-my.optim.ridge(y=sex2$case,X=mm,penalize=c(0,rep(1,6)),B=B,numBoot=250,rangeOpt=c(0,20),standardize=TRUE,type.standardize=2,alpha=0.05)
+ fit[names(fit)[-5]]
+
+#table for paper:
+tbl<-round(rbind(
+cbind(fit.f$coef[-1],fit.f$ci.l[-1],fit.f$ci.u[-1]),
+cbind(fit[names(fit)[2]]$coefs.opt.TM[-1,1],fit[names(fit)[4]]$CLIP[-1,2:3])
+),4)
+cv<-c("AGE","OC","VIC","VICL","VIS","DIA")
+
+xf<-cbind( rep("UTI",nrow(tbl)), rep(c("FP","RR"),each=6), rep(cv,2) ,tbl )
+
+xfx<-xtable(xf)
+print(xfx,include.rownames =F)
